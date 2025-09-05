@@ -427,6 +427,60 @@ class ApiService {
       throw new Error(error.error || 'Failed to log download activity');
     }
   }
+
+  async downloadBatch(batchId: string): Promise<{ success: boolean; message: string; filename?: string; size?: string; downloadUrl?: string; error?: string }> {
+    const batchApiUrl = process.env.REACT_APP_API_URL ? `${process.env.REACT_APP_API_URL}/batch` : '/api/batch';
+    
+    const response = await fetch(`${batchApiUrl}/download`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+         ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify({ 
+        batchId
+      }),
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      return {
+        success: false,
+        error: error.error || 'DOWNLOAD_FAILED',
+        message: error.message || 'Failed to download batch data'
+      };
+    }
+
+    // Check if the response is a file download (binary data)
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json') && !response.headers.get('content-disposition')) {
+      // This is a JSON response with metadata, not the actual file
+      return await response.json();
+    } else {
+      // This is the actual file download
+      const contentDisposition = response.headers.get('content-disposition');
+      const filename = contentDisposition 
+        ? contentDisposition.split('filename=')[1]?.replace(/"/g, '') || `batch_${batchId}.json`
+        : `batch_${batchId}.json`;
+      
+      const contentLength = response.headers.get('content-length');
+      const size = contentLength 
+        ? `${(parseInt(contentLength) / (1024 * 1024)).toFixed(2)} MB`
+        : 'unknown';
+
+      // Create blob and download URL
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+
+      return {
+        success: true,
+        message: 'Batch downloaded successfully',
+        filename,
+        size,
+        downloadUrl
+      };
+    }
+  }
 }
 
 export const apiService = new ApiService(); 

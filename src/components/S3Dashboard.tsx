@@ -30,6 +30,7 @@ import {
   AccountCircle,
   ExpandMore,
   Timeline,
+  GetApp,
 } from '@mui/icons-material';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { useS3Config } from '../contexts/S3ConfigContext';
@@ -41,6 +42,7 @@ import DeleteTab from './tabs/DeleteTab';
 import SchemaValidationTab from './tabs/SchemaValidationTab';
 import UserManagementTab from './tabs/UserManagementTab';
 import ActivityTab from './tabs/ActivityTab';
+import BatchDownloadTab from './tabs/BatchDownloadTab';
 
 const S3Dashboard: React.FC = () => {
   const { config, clearConfig } = useS3Config();
@@ -116,6 +118,13 @@ const S3Dashboard: React.FC = () => {
       label: 'Activity',
       icon: <Timeline />,
       component: <ActivityTab />,
+      visible: isAdmin, // Only show to admin users
+    },
+    {
+      path: '/batch-download',
+      label: 'Batch Download',
+      icon: <GetApp />,
+      component: <BatchDownloadTab />,
       visible: isAdmin, // Only show to admin users
     },
   ];
@@ -569,6 +578,7 @@ const S3Dashboard: React.FC = () => {
               <Route path="/schema-validation" element={<SchemaValidationTab />} />
               {isAdmin && <Route path="/user-management" element={<UserManagementTab />} />}
               {isAdmin && <Route path="/activity" element={<ActivityTab />} />}
+              {isAdmin && <Route path="/batch-download" element={<BatchDownloadTab />} />}
               <Route path="/" element={<UploadTab />} />
             </Routes>
           </Box>
