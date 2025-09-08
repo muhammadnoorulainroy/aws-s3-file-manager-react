@@ -266,41 +266,8 @@ const ActivityTab: React.FC = () => {
     return date.toLocaleDateString();
   };
 
-  const isAdmin = authService.isAdmin();
-
-  // Check if user is admin
-  if (!isAdmin) {
-    return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <Box
-          sx={{
-            background: 'linear-gradient(135deg, #ffffff 0%, #fefefe 100%)',
-            borderRadius: 3,
-            border: '1px solid #e2e8f0',
-            boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-            p: 6,
-            textAlign: 'center',
-          }}
-        >
-          <Timeline sx={{ fontSize: 64, color: '#6b7280', mb: 3 }} />
-          
-          <Typography variant="h5" sx={{ fontWeight: 700, color: '#0f172a', mb: 2 }}>
-            Admin Access Required
-          </Typography>
-          
-          <Typography variant="body1" sx={{ color: '#64748b', mb: 4, maxWidth: 500, mx: 'auto' }}>
-            Activity logs are only accessible to administrators. Please contact your administrator if you need access to this information.
-          </Typography>
-
-          <Alert severity="warning" sx={{ textAlign: 'left', maxWidth: 600, mx: 'auto' }}>
-            <Typography variant="body2" sx={{ fontWeight: 500 }}>
-              This section contains sensitive user activity data and is restricted to admin users only.
-            </Typography>
-          </Alert>
-        </Box>
-      </Box>
-    );
-  }
+  // Activity tab is now accessible to all users
+  // Removed admin-only restriction
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
