@@ -118,14 +118,14 @@ const S3Dashboard: React.FC = () => {
       label: 'Activity',
       icon: <Timeline />,
       component: <ActivityTab />,
-      visible: isAdmin, // Only show to admin users
+      visible: true, // Show to all users
     },
     {
       path: '/batch-download',
       label: 'Batch Download',
       icon: <GetApp />,
       component: <BatchDownloadTab />,
-      visible: isAdmin, // Only show to admin users
+      visible: true, // Show to all users
     },
   ];
 
@@ -577,8 +577,8 @@ const S3Dashboard: React.FC = () => {
               <Route path="/delete" element={<DeleteTab />} />
               <Route path="/schema-validation" element={<SchemaValidationTab />} />
               {isAdmin && <Route path="/user-management" element={<UserManagementTab />} />}
-              {isAdmin && <Route path="/activity" element={<ActivityTab />} />}
-              {isAdmin && <Route path="/batch-download" element={<BatchDownloadTab />} />}
+              <Route path="/activity" element={<ActivityTab />} />
+              <Route path="/batch-download" element={<BatchDownloadTab />} />
               <Route path="/" element={<UploadTab />} />
             </Routes>
           </Box>
