@@ -32,17 +32,10 @@ if (!fs.existsSync(dataDir)) {
 function initializeAuthorizedUsersFile() {
   if (!fs.existsSync(AUTHORIZED_USERS_FILE)) {
     const defaultUsers = {
-      users: [
-        {
-          email: 'admin@turing.com',
-          role: 'admin',
-          addedAt: new Date().toISOString(),
-          addedBy: 'system'
-        }
-      ]
+      users: []
     };
     fs.writeFileSync(AUTHORIZED_USERS_FILE, JSON.stringify(defaultUsers, null, 2));
-    console.log('✅ Initialized authorized users file with default admin');
+    console.log('✅ Initialized authorized users file (empty)');
   }
 }
 
