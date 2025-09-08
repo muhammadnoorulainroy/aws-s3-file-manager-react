@@ -23,6 +23,8 @@ import {
   Tooltip,
   Card,
   CardContent,
+  Pagination,
+  Stack,
 } from '@mui/material';
 import {
   Timeline,
@@ -56,6 +58,14 @@ interface Activity {
 interface ActivityResponse {
   activities: Activity[];
   totalCount: number;
+  pagination: {
+    currentPage: number;
+    totalPages: number;
+    totalCount: number;
+    limit: number;
+    hasNextPage: boolean;
+    hasPrevPage: boolean;
+  };
   stats: {
     totalUploads: number;
     totalDownloads: number;
@@ -72,6 +82,16 @@ const ActivityTab: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFilter, setActionFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [pagination, setPagination] = useState({
+    currentPage: 1,
+    totalPages: 1,
+    totalCount: 0,
+    limit: 20,
+    hasNextPage: false,
+    hasPrevPage: false,
+  });
   const [stats, setStats] = useState({
     totalUploads: 0,
     totalDownloads: 0,
@@ -96,72 +116,8 @@ const ActivityTab: React.FC = () => {
     });
   };
 
-  // Fetch activities
-  const fetchActivities = async () => {
-    // Skip API calls in local development and show sample data
-    if (isLocalDevelopment) {
-      // Simulate loading
-      setTimeout(() => {
-        const sampleActivities: Activity[] = [
-          {
-            id: "act_001",
-            userEmail: "noman.s@turing.com",
-            userName: "Noman Shafi",
-            action: "upload",
-            fileName: "sample-data.json",
-            fileSize: "2.5 MB",
-            timestamp: "2025-06-05T18:30:15.123Z",
-            status: "success",
-            details: "File uploaded to /uploads/sample-data.json"
-          },
-          {
-            id: "act_002",
-            userEmail: "aarunik.g@turing.com",
-            userName: "Aarunik G",
-            action: "download",
-            fileName: "report-2025.pdf",
-            fileSize: "1.8 MB",
-            timestamp: "2025-06-05T17:45:30.456Z",
-            status: "success",
-            details: "File downloaded from /reports/report-2025.pdf"
-          },
-          {
-            id: "act_003",
-            userEmail: "noman.s@turing.com",
-            userName: "Noman Shafi",
-            action: "delete",
-            fileName: "old-backup.zip",
-            fileSize: "15.2 MB",
-            timestamp: "2025-06-05T16:20:45.789Z",
-            status: "success",
-            details: "File deleted from /backups/old-backup.zip"
-          },
-          {
-            id: "act_004",
-            userEmail: "aarunik.g@turing.com",
-            userName: "Aarunik G",
-            action: "upload",
-            fileName: "config.json",
-            fileSize: "0.5 MB",
-            timestamp: "2025-06-05T15:10:12.345Z",
-            status: "failed",
-            details: "Upload failed: Invalid file format"
-          }
-        ];
-        
-        setActivities(sampleActivities);
-        setFilteredActivities(sampleActivities);
-        setStats({
-          totalUploads: sampleActivities.filter(a => a.action === 'upload').length,
-          totalDownloads: sampleActivities.filter(a => a.action === 'download').length,
-          totalDeletes: sampleActivities.filter(a => a.action === 'delete').length,
-          totalUsers: new Set(sampleActivities.map(a => a.userEmail)).size,
-        });
-        setIsLoading(false);
-      }, 1000);
-      return;
-    }
-
+  // Fetch activities with pagination
+  const fetchActivities = async (page: number = currentPage, resetFilters: boolean = false) => {
     try {
       setIsLoading(true);
       setError(null);
@@ -171,7 +127,19 @@ const ActivityTab: React.FC = () => {
         return;
       }
       
-      const response = await makeAuthenticatedRequest('/api/activities');
+      // Build query parameters
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: itemsPerPage.toString(),
+        search: resetFilters ? '' : searchTerm,
+        action: resetFilters ? 'all' : actionFilter,
+        status: resetFilters ? 'all' : statusFilter,
+        sortBy: 'timestamp',
+        sortOrder: 'DESC'
+      });
+      
+      const baseUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:5001' : '';
+      const response = await makeAuthenticatedRequest(`${baseUrl}/api/activities?${params}`);
       
       if (!response.ok) {
         setError(`Failed to fetch activities: ${response.statusText}`);
@@ -182,50 +150,66 @@ const ActivityTab: React.FC = () => {
       setActivities(data.activities || []);
       setFilteredActivities(data.activities || []);
       setStats(data.stats || { totalUploads: 0, totalDownloads: 0, totalDeletes: 0, totalUsers: 0 });
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError((err as Error).message);
-      } else if (typeof err === 'string') {
-        setError(err);
-      } else {
-        setError('Failed to fetch activities');
-      }
+      setPagination(data.pagination || {
+        currentPage: 1,
+        totalPages: 1,
+        totalCount: 0,
+        limit: 20,
+        hasNextPage: false,
+        hasPrevPage: false,
+      });
+      setCurrentPage(page);
+    } catch (err: any) {
+      console.error('Error fetching activities:', err);
+      const errorMessage = err?.message || err?.toString() || 'Failed to fetch activities';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Filter activities based on search and filters
+  // Pagination handlers
+  const handlePageChange = (event: React.ChangeEvent<unknown>, page: number) => {
+    fetchActivities(page);
+  };
+
+  const handleItemsPerPageChange = (event: any) => {
+    const newItemsPerPage = parseInt(event.target.value);
+    setItemsPerPage(newItemsPerPage);
+    setCurrentPage(1);
+    fetchActivities(1);
+  };
+
+  // Handle filter changes
+  const handleFilterChange = () => {
+    setCurrentPage(1);
+    fetchActivities(1);
+  };
+
+  // Since we're using server-side pagination, we don't need client-side filtering
+  // The filtering is now handled by the backend API
   useEffect(() => {
-    let filtered = activities;
-
-    // Apply search filter
-    if (searchTerm) {
-      filtered = filtered.filter(activity =>
-        activity.userName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        activity.userEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        activity.fileName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        activity.details.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-
-    // Apply action filter
-    if (actionFilter !== 'all') {
-      filtered = filtered.filter(activity => activity.action === actionFilter);
-    }
-
-    // Apply status filter
-    if (statusFilter !== 'all') {
-      filtered = filtered.filter(activity => activity.status === statusFilter);
-    }
-
-    setFilteredActivities(filtered);
-  }, [activities, searchTerm, actionFilter, statusFilter]);
+    setFilteredActivities(activities);
+  }, [activities]);
 
   // Load activities on component mount
   useEffect(() => {
     fetchActivities();
   }, []);
+
+  // Trigger API call when filters change (with debounce for search)
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (currentPage === 1) {
+        fetchActivities(1);
+      } else {
+        setCurrentPage(1);
+        fetchActivities(1);
+      }
+    }, searchTerm ? 500 : 0); // Debounce search by 500ms
+
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm, actionFilter, statusFilter, itemsPerPage]);
 
   // Get action icon
   const getActionIcon = (action: string) => {
@@ -353,7 +337,7 @@ const ActivityTab: React.FC = () => {
           
           <Tooltip title="Refresh Activities">
             <IconButton
-              onClick={fetchActivities}
+              onClick={() => fetchActivities(currentPage)}
               disabled={isLoading}
               sx={{
                 background: 'linear-gradient(135deg, #059669 0%, #047857 100%)',
@@ -371,13 +355,6 @@ const ActivityTab: React.FC = () => {
           </Tooltip>
         </Box>
 
-        {isLocalDevelopment && (
-          <Alert severity="info" sx={{ borderRadius: 3 }}>
-            <Typography variant="body2">
-              <strong>Development Mode:</strong> Showing sample activity data. In production, this will display real user activity logs.
-            </Typography>
-          </Alert>
-        )}
       </Box>
 
       {/* Statistics Cards */}
@@ -636,6 +613,57 @@ const ActivityTab: React.FC = () => {
             </Table>
           </TableContainer>
         )}
+
+        {/* Pagination Controls */}
+        {!isLoading && !error && (
+            <Box sx={{ 
+              display: 'flex', 
+              justifyContent: 'space-between', 
+              alignItems: 'center', 
+              mt: 3,
+              px: 2,
+              py: 1,
+              backgroundColor: '#f8fafc',
+              borderRadius: 2,
+              border: '1px solid #e2e8f0'
+            }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 500 }}>
+                  Showing {((pagination.currentPage - 1) * pagination.limit) + 1} to{' '}
+                  {Math.min(pagination.currentPage * pagination.limit, pagination.totalCount)} of{' '}
+                  {pagination.totalCount} activities
+                </Typography>
+                
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                  <InputLabel>Items per page</InputLabel>
+                  <Select
+                    value={itemsPerPage}
+                    label="Items per page"
+                    onChange={handleItemsPerPageChange}
+                  >
+                    <MenuItem value={10}>10</MenuItem>
+                    <MenuItem value={20}>20</MenuItem>
+                    <MenuItem value={50}>50</MenuItem>
+                    <MenuItem value={100}>100</MenuItem>
+                  </Select>
+                </FormControl>
+              </Box>
+
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Pagination
+                  count={pagination.totalPages}
+                  page={pagination.currentPage}
+                  onChange={handlePageChange}
+                  color="primary"
+                  shape="rounded"
+                  showFirstButton
+                  showLastButton
+                  siblingCount={1}
+                  boundaryCount={1}
+                />
+              </Stack>
+            </Box>
+          )}
       </Box>
     </Box>
   );
