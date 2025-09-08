@@ -1485,6 +1485,22 @@ app.post('/api/batch/download', checkUserAuthorization, async (req, res) => {
       `Batch ${batchId} downloaded from Turing labeling system`
     );
     
+    // Also log to database
+    try {
+      await databaseService.logActivity({
+        userEmail: req.user.email,
+        userName: req.user.name || req.user.email,
+        action: 'batch-download',
+        fileName: filename,
+        fileSize: `${fileSizeInMB} MB`,
+        status: 'success',
+        details: `Batch ${batchId} downloaded from Turing labeling system`
+      });
+    } catch (dbError) {
+      console.error('❌ Failed to log activity to database:', dbError);
+      // Don't fail the request if database logging fails
+    }
+    
     // Set response headers for file download
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'application/octet-stream'); // Force download
@@ -1522,6 +1538,22 @@ app.post('/api/batch/download', checkUserAuthorization, async (req, res) => {
       'failed',
       `Batch download failed: ${error.message}`
     );
+    
+    // Also log to database
+    try {
+      await databaseService.logActivity({
+        userEmail: req.user?.email || 'unknown',
+        userName: req.user?.name || req.user?.email || 'unknown',
+        action: 'batch-download',
+        fileName: `batch_${req.body?.batchId || 'unknown'}`,
+        fileSize: 'unknown',
+        status: 'failed',
+        details: `Batch download failed: ${error.message}`
+      });
+    } catch (dbError) {
+      console.error('❌ Failed to log failed activity to database:', dbError);
+      // Don't fail the request if database logging fails
+    }
     
     if (error.response) {
       // HTTP error from the external API
