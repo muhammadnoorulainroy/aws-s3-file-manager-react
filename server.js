@@ -11,7 +11,9 @@ const multer = require('multer');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 const databaseService = require('./database');
+
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || process.env.PORT || 5001;
@@ -1301,6 +1303,267 @@ app.get('/api/activities', checkUserAuthorization, requireAdmin, async (req, res
       res.status(500).json({ 
         error: 'FETCH_ACTIVITIES_FAILED', 
         message: 'Failed to fetch activity logs from both database and JSON file.' 
+      });
+    }
+  }
+});
+
+// ============================================
+// BATCH DOWNLOAD API ENDPOINTS
+// ============================================
+
+// Download batch data from Turing labeling system
+app.post('/api/batch/download', checkUserAuthorization, async (req, res) => {
+  try {
+    const { batchId } = req.body;
+    
+    if (!batchId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'MISSING_PARAMETERS',
+        message: 'Batch ID is required' 
+      });
+    }
+    
+    // Hardcoded auth token (moved from frontend)
+    const authToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6Im5vbWFuLnNAdHVyaW5nLmNvbSIsInN1YiI6MzksImlhdCI6MTc1Njg5MDI5MCwiZXhwIjoxNzU3NDk1MDkwfQ.yRfHA7HSdrrOpgFmjKCjHrhVu6-5xbC1jsQbFQl37u4';
+    
+    console.log(`📦 Starting batch download for batch ID: ${batchId}`);
+    
+    // Create URL for the batch download
+    const downloadUrl = `https://labeling-z.turing.com/api/delivery/batches/${batchId}/download-rlhf-json?versionsFilter=false&reviewsFilter=false&addFormHistory=false&statusHistoryFilter=false&deliveryInfoFilter=false&latest=true&publicImageLinkFilter=false`;
+    
+    // Set up headers
+    const headers = {
+      'Authorization': `Bearer ${authToken}`,
+      'Accept': 'application/json',
+      'User-Agent': 'S3FileManager/1.0'
+    };
+    
+    console.log(`🔗 Downloading from: ${downloadUrl}`);
+    
+    // Make the request to download the batch data
+    const response = await axios.get(downloadUrl, {
+      headers,
+      timeout: 60000, // 60 second timeout
+      responseType: 'stream',
+      validateStatus: function (status) {
+        // Accept any status code to handle errors properly
+        return status < 500; // Only reject network errors
+      }
+    });
+    
+    // Check if we got a successful response
+    if (response.status !== 200) {
+      console.error(`❌ HTTP Error: ${response.status} ${response.statusText}`);
+      
+      // Try to read the response as text to get error details
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const chunks = [];
+        response.data.on('data', chunk => chunks.push(chunk));
+        response.data.on('end', () => {
+          const responseText = Buffer.concat(chunks).toString();
+          console.error('Error response body:', responseText.substring(0, 500));
+        });
+      } catch (readError) {
+        console.error('Could not read error response:', readError);
+      }
+      
+      if (response.status === 401) {
+        return res.status(401).json({
+          success: false,
+          error: 'UNAUTHORIZED',
+          message: 'Authentication token is invalid or expired'
+        });
+      } else if (response.status === 404) {
+        return res.status(404).json({
+          success: false,
+          error: 'BATCH_NOT_FOUND',
+          message: `Batch ${batchId} not found or not accessible`
+        });
+      } else if (response.status === 403) {
+        return res.status(403).json({
+          success: false,
+          error: 'ACCESS_DENIED',
+          message: 'Access denied. Check your permissions for this batch'
+        });
+      } else {
+        return res.status(response.status).json({
+          success: false,
+          error: 'EXTERNAL_API_ERROR',
+          message: errorMessage
+        });
+      }
+    }
+    
+    // Create a temporary file to store the downloaded data
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const timestamp = Date.now();
+    const filename = `batch_${batchId}_${timestamp}.json`;
+    const tempFilePath = path.join(tempDir, filename);
+    
+    // Create write stream
+    const writeStream = fs.createWriteStream(tempFilePath);
+    
+    // Pipe the response to the file
+    response.data.pipe(writeStream);
+    
+    // Wait for the download to complete
+    await new Promise((resolve, reject) => {
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+      response.data.on('error', reject);
+    });
+    
+    console.log(`✅ Batch data downloaded to: ${tempFilePath}`);
+    
+    // Verify it's valid JSON
+    try {
+      const fileContent = fs.readFileSync(tempFilePath, 'utf8');
+      
+      // Check if the response is HTML (common error response)
+      if (fileContent.trim().startsWith('<!DOCTYPE') || fileContent.trim().startsWith('<html')) {
+        console.error('❌ Received HTML response instead of JSON');
+        console.error('Response preview:', fileContent.substring(0, 200));
+        
+        // Clean up the invalid file
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+        }
+        
+        return res.status(401).json({
+          success: false,
+          error: 'AUTHENTICATION_ERROR',
+          message: 'Received HTML response instead of JSON. This usually indicates authentication failure or the batch is not accessible.'
+        });
+      }
+      
+      // Try to parse as JSON
+      JSON.parse(fileContent);
+      console.log(`✅ Downloaded file is valid JSON`);
+    } catch (jsonError) {
+      console.error('❌ Downloaded file is not valid JSON:', jsonError);
+      
+      // Read a preview of the file to help with debugging
+      try {
+        const fileContent = fs.readFileSync(tempFilePath, 'utf8');
+        console.error('File content preview:', fileContent.substring(0, 200));
+      } catch (readError) {
+        console.error('Could not read file for preview:', readError);
+      }
+      
+      // Clean up the invalid file
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+      
+      return res.status(500).json({
+        success: false,
+        error: 'INVALID_JSON',
+        message: 'Downloaded data is not valid JSON format. This may indicate an authentication error or server issue.'
+      });
+    }
+    
+    // Get file size
+    const stats = fs.statSync(tempFilePath);
+    const fileSizeInBytes = stats.size;
+    const fileSizeInMB = (fileSizeInBytes / (1024 * 1024)).toFixed(2);
+    
+    // Log successful batch download activity
+    logActivity(
+      req.user.email,
+      req.user.name || req.user.email,
+      'batch-download',
+      filename,
+      `${fileSizeInMB} MB`,
+      'success',
+      `Batch ${batchId} downloaded from Turing labeling system`
+    );
+    
+    // Set response headers for file download
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/octet-stream'); // Force download
+    res.setHeader('Content-Length', fileSizeInBytes);
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    // Create read stream and pipe to response
+    const readStream = fs.createReadStream(tempFilePath);
+    readStream.pipe(res);
+    
+    // Clean up temp file after sending
+    readStream.on('end', () => {
+      setTimeout(() => {
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+          console.log(`🗑️ Cleaned up temp file: ${tempFilePath}`);
+        }
+      }, 1000); // Delay cleanup to ensure file is fully sent
+    });
+    
+    console.log(`📤 Batch file sent to client: ${filename} (${fileSizeInMB} MB)`);
+    
+  } catch (error) {
+    console.error('❌ Batch download error:', error);
+    
+    // Log failed batch download activity
+    logActivity(
+      req.user?.email || 'unknown',
+      req.user?.name || req.user?.email || 'unknown',
+      'batch-download',
+      `batch_${req.body?.batchId || 'unknown'}`,
+      'unknown',
+      'failed',
+      `Batch download failed: ${error.message}`
+    );
+    
+    if (error.response) {
+      // HTTP error from the external API
+      const statusCode = error.response.status;
+      const statusText = error.response.statusText;
+      
+      if (statusCode === 401) {
+        return res.status(401).json({
+          success: false,
+          error: 'UNAUTHORIZED',
+          message: 'Authentication token is invalid or expired'
+        });
+      } else if (statusCode === 404) {
+        return res.status(404).json({
+          success: false,
+          error: 'BATCH_NOT_FOUND',
+          message: `Batch ${req.body.batchId} not found or not accessible`
+        });
+      } else if (statusCode === 403) {
+        return res.status(403).json({
+          success: false,
+          error: 'ACCESS_DENIED',
+          message: 'Access denied. Check your permissions for this batch'
+        });
+      } else {
+        return res.status(statusCode).json({
+          success: false,
+          error: 'EXTERNAL_API_ERROR',
+          message: `External API error: ${statusCode} ${statusText}`
+        });
+      }
+    } else if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+      return res.status(408).json({
+        success: false,
+        error: 'TIMEOUT',
+        message: 'Request timed out. The batch data might be too large or the server is slow'
+      });
+    } else {
+      return res.status(500).json({
+        success: false,
+        error: 'DOWNLOAD_FAILED',
+        message: error.message || 'Failed to download batch data'
       });
     }
   }
