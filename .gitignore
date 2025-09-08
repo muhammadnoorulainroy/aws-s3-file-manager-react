@@ -34,9 +34,25 @@ pm2.log
 
 # OS files
 Thumbs.db
+.DS_Store
+**/.DS_Store
+
+# Data folder - contains sensitive user data and activity logs
+/data/
+data/
+
+# Deployment configuration - contains sensitive deployment info
+.github/workflows/deploy.yml
 
 # Package lock files (can cause conflicts in teams)
 package-lock.json
 
-./data/authorized-users.json
-./data/activity.json
+# Database files
+database_schema.sql
+json_to_postgres.py
+json_to_postgres_vm.py
+postgres_env/
+
+# Environment files
+.env
+.env.*

@@ -39,7 +39,10 @@ import {
   Save,
   Cancel,
   CloudOff,
+  Search,
+  Refresh,
 } from '@mui/icons-material';
+import { Pagination, Stack, Tooltip } from '@mui/material';
 import { authService } from '../../services/authService';
 
 interface AuthorizedUser {
@@ -51,6 +54,14 @@ interface AuthorizedUser {
 
 interface UserListResponse {
   users: AuthorizedUser[];
+  pagination: {
+    currentPage: number;
+    totalPages: number;
+    totalCount: number;
+    limit: number;
+    hasNextPage: boolean;
+    hasPrevPage: boolean;
+  };
   currentUser?: {
     email: string;
     role: 'admin' | 'user';
@@ -64,15 +75,49 @@ const UserManagementTab: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AuthorizedUser | null>(null);
+  const [userToDelete, setUserToDelete] = useState<AuthorizedUser | null>(null);
+  
+  // Pagination and filtering state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(20);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [pagination, setPagination] = useState({
+    currentPage: 1,
+    totalPages: 1,
+    totalCount: 0,
+    limit: 20,
+    hasNextPage: false,
+    hasPrevPage: false,
+  });
   
   // Form state
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserRole, setNewUserRole] = useState<'admin' | 'user'>('user');
   const [editUserRole, setEditUserRole] = useState<'admin' | 'user'>('user');
 
-  // Check if running in local development
-  const isLocalDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  // Pagination handlers
+  const handlePageChange = (event: React.ChangeEvent<unknown>, page: number) => {
+    fetchUsers(page);
+  };
+
+  const handleItemsPerPageChange = (event: any) => {
+    const newItemsPerPage = parseInt(event.target.value);
+    setItemsPerPage(newItemsPerPage);
+    setCurrentPage(1);
+    fetchUsers(1);
+  };
+
+  const handleFilterChange = () => {
+    if (currentPage === 1) {
+      fetchUsers(1);
+    } else {
+      setCurrentPage(1);
+      fetchUsers(1);
+    }
+  };
 
   // Helper function to make authenticated requests
   const makeAuthenticatedRequest = async (url: string, options: RequestInit = {}) => {
@@ -88,14 +133,8 @@ const UserManagementTab: React.FC = () => {
     });
   };
 
-  // Fetch authorized users
-  const fetchUsers = async () => {
-    // Skip API calls in local development
-    if (isLocalDevelopment) {
-      setIsLoading(false);
-      return;
-    }
-
+  // Fetch authorized users with pagination and filtering
+  const fetchUsers = async (page: number = currentPage, resetFilters: boolean = false) => {
     try {
       setIsLoading(true);
       setError(null);
@@ -104,7 +143,18 @@ const UserManagementTab: React.FC = () => {
         throw new Error('User not authenticated. Please sign in again.');
       }
       
-      const response = await makeAuthenticatedRequest('/api/users/authorized');
+      // Build query parameters
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: itemsPerPage.toString(),
+        search: resetFilters ? '' : searchTerm,
+        role: resetFilters ? 'all' : roleFilter,
+        sortBy: 'added_at',
+        sortOrder: 'DESC'
+      });
+      
+      const baseUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:5001' : '';
+      const response = await makeAuthenticatedRequest(`${baseUrl}/api/users/authorized?${params}`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch users: ${response.statusText}`);
@@ -113,8 +163,19 @@ const UserManagementTab: React.FC = () => {
       const data: UserListResponse = await response.json();
       setUsers(data.users || []);
       setCurrentUser(data.currentUser || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch users');
+      setPagination(data.pagination || {
+        currentPage: 1,
+        totalPages: 1,
+        totalCount: 0,
+        limit: 20,
+        hasNextPage: false,
+        hasPrevPage: false,
+      });
+      setCurrentPage(page);
+    } catch (err: any) {
+      console.error('Error fetching users:', err);
+      const errorMessage = err?.message || err?.toString() || 'Failed to fetch users';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -122,11 +183,6 @@ const UserManagementTab: React.FC = () => {
 
   // Add new user
   const handleAddUser = async () => {
-    if (isLocalDevelopment) {
-      setError('User management is not available in local development mode.');
-      return;
-    }
-
     if (!newUserEmail.trim()) {
       setError('Email is required');
       return;
@@ -140,7 +196,8 @@ const UserManagementTab: React.FC = () => {
     try {
       setError(null);
       
-      const response = await makeAuthenticatedRequest('/api/users/authorized', {
+      const baseUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:5001' : '';
+      const response = await makeAuthenticatedRequest(`${baseUrl}/api/users/authorized`, {
         method: 'POST',
         body: JSON.stringify({
           email: newUserEmail.trim().toLowerCase(),
@@ -160,18 +217,15 @@ const UserManagementTab: React.FC = () => {
       setNewUserEmail('');
       setNewUserRole('user');
       setIsAddDialogOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add user');
+    } catch (err: any) {
+      console.error('Error adding user:', err);
+      const errorMessage = err?.message || err?.toString() || 'Failed to add user';
+      setError(errorMessage);
     }
   };
 
   // Edit user role
   const handleEditUser = async () => {
-    if (isLocalDevelopment) {
-      setError('User management is not available in local development mode.');
-      return;
-    }
-
     if (!editingUser || !currentUser || currentUser.role !== 'admin') {
       setError('Only administrators can edit users');
       return;
@@ -180,7 +234,8 @@ const UserManagementTab: React.FC = () => {
     try {
       setError(null);
       
-      const response = await makeAuthenticatedRequest(`/api/users/authorized/${encodeURIComponent(editingUser.email)}`, {
+      const baseUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:5001' : '';
+      const response = await makeAuthenticatedRequest(`${baseUrl}/api/users/authorized/${encodeURIComponent(editingUser.email)}`, {
         method: 'PUT',
         body: JSON.stringify({
           role: editUserRole,
@@ -198,36 +253,38 @@ const UserManagementTab: React.FC = () => {
       // Reset form
       setEditingUser(null);
       setIsEditDialogOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update user');
+    } catch (err: any) {
+      console.error('Error updating user:', err);
+      const errorMessage = err?.message || err?.toString() || 'Failed to update user';
+      setError(errorMessage);
     }
   };
 
-  // Delete user
-  const handleDeleteUser = async (email: string) => {
-    if (isLocalDevelopment) {
-      setError('User management is not available in local development mode.');
-      return;
-    }
-
+  // Open delete confirmation dialog
+  const handleDeleteClick = (user: AuthorizedUser) => {
     if (!currentUser || currentUser.role !== 'admin') {
       setError('Only administrators can delete users');
       return;
     }
 
-    if (email === currentUser.email) {
+    if (user.email === currentUser.email) {
       setError('You cannot delete your own account');
       return;
     }
 
-    if (!window.confirm(`Are you sure you want to remove ${email} from authorized users?`)) {
-      return;
-    }
+    setUserToDelete(user);
+    setIsDeleteDialogOpen(true);
+  };
+
+  // Confirm delete user
+  const handleDeleteConfirm = async () => {
+    if (!userToDelete) return;
 
     try {
       setError(null);
       
-      const response = await makeAuthenticatedRequest(`/api/users/authorized/${encodeURIComponent(email)}`, {
+      const baseUrl = process.env.NODE_ENV === 'development' ? 'http://localhost:5001' : '';
+      const response = await makeAuthenticatedRequest(`${baseUrl}/api/users/authorized/${encodeURIComponent(userToDelete.email)}`, {
         method: 'DELETE',
       });
 
@@ -236,10 +293,16 @@ const UserManagementTab: React.FC = () => {
         throw new Error(errorData.error || `Failed to delete user: ${response.statusText}`);
       }
 
-      // Refresh the user list
+      // Close dialog and refresh the user list
+      setIsDeleteDialogOpen(false);
+      setUserToDelete(null);
       await fetchUsers();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete user');
+    } catch (err: any) {
+      console.error('Error deleting user:', err);
+      const errorMessage = err?.message || err?.toString() || 'Failed to delete user';
+      setError(errorMessage);
+      setIsDeleteDialogOpen(false);
+      setUserToDelete(null);
     }
   };
 
@@ -255,10 +318,19 @@ const UserManagementTab: React.FC = () => {
     fetchUsers();
   }, []);
 
+  // Trigger API call when filters change (with debounce for search)
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      handleFilterChange();
+    }, searchTerm ? 500 : 0); // Debounce search by 500ms
+
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm, roleFilter, itemsPerPage]);
+
   const isAdmin = authService.isAdmin();
 
   // Show local development message
-  if (isLocalDevelopment) {
+  if (false) {
     return (
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {/* Header */}
@@ -443,9 +515,56 @@ const UserManagementTab: React.FC = () => {
           p: 4,
         }}
       >
-        <Typography variant="h6" sx={{ fontWeight: 600, color: '#0f172a', mb: 3 }}>
-          Authorized Users ({users.length})
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3 }}>
+          <Typography variant="h6" sx={{ fontWeight: 600, color: '#0f172a' }}>
+            Authorized Users ({pagination.totalCount})
+          </Typography>
+          <Tooltip title="Refresh Users">
+            <IconButton
+              onClick={() => fetchUsers(currentPage)}
+              disabled={isLoading}
+              sx={{
+                background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+                color: 'white',
+                '&:hover': {
+                  background: 'linear-gradient(135deg, #d97706 0%, #b45309 100%)',
+                },
+                '&:disabled': {
+                  background: '#e5e7eb',
+                  color: '#9ca3af',
+                },
+              }}
+            >
+              <Refresh />
+            </IconButton>
+          </Tooltip>
+        </Box>
+
+        {/* Search and Filter Controls */}
+        <Box sx={{ display: 'flex', gap: 2, mb: 3, alignItems: 'center', flexWrap: 'wrap' }}>
+          <TextField
+            placeholder="Search users..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            size="small"
+            sx={{ minWidth: 200, flex: 1 }}
+            InputProps={{
+              startAdornment: <Search sx={{ color: '#9ca3af', mr: 1 }} />,
+            }}
+          />
+          <FormControl size="small" sx={{ minWidth: 120 }}>
+            <InputLabel>Role Filter</InputLabel>
+            <Select
+              value={roleFilter}
+              label="Role Filter"
+              onChange={(e) => setRoleFilter(e.target.value)}
+            >
+              <MenuItem value="all">All Roles</MenuItem>
+              <MenuItem value="admin">Admin</MenuItem>
+              <MenuItem value="user">User</MenuItem>
+            </Select>
+          </FormControl>
+        </Box>
 
         {isLoading ? (
           <Box sx={{ textAlign: 'center', py: 6 }}>
@@ -528,7 +647,7 @@ const UserManagementTab: React.FC = () => {
                           {user.email !== currentUser?.email && (
                             <IconButton
                               size="small"
-                              onClick={() => handleDeleteUser(user.email)}
+                              onClick={() => handleDeleteClick(user)}
                               sx={{ 
                                 color: '#dc2626',
                                 '&:hover': { backgroundColor: 'rgba(220, 38, 38, 0.1)' }
@@ -545,6 +664,56 @@ const UserManagementTab: React.FC = () => {
               </TableBody>
             </Table>
           </TableContainer>
+        )}
+
+        {/* Pagination Controls */}
+        {!isLoading && !error && pagination.totalCount > 0 && (
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              mt: 3,
+              pt: 3,
+              borderTop: '1px solid #e2e8f0',
+              flexWrap: 'wrap',
+              gap: 2,
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+              <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 500 }}>
+                Showing {((pagination.currentPage - 1) * pagination.limit) + 1} to{' '}
+                {Math.min(pagination.currentPage * pagination.limit, pagination.totalCount)} of{' '}
+                {pagination.totalCount} users
+              </Typography>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel>Items per page</InputLabel>
+                <Select
+                  value={itemsPerPage}
+                  label="Items per page"
+                  onChange={handleItemsPerPageChange}
+                >
+                  <MenuItem value={10}>10</MenuItem>
+                  <MenuItem value={20}>20</MenuItem>
+                  <MenuItem value={50}>50</MenuItem>
+                  <MenuItem value={100}>100</MenuItem>
+                </Select>
+              </FormControl>
+            </Box>
+            <Stack direction="row" spacing={2} alignItems="center">
+              <Pagination
+                count={pagination.totalPages}
+                page={pagination.currentPage}
+                onChange={handlePageChange}
+                color="primary"
+                shape="rounded"
+                showFirstButton
+                showLastButton
+                siblingCount={1}
+                boundaryCount={1}
+              />
+            </Stack>
+          </Box>
         )}
       </Box>
 
@@ -678,6 +847,51 @@ const UserManagementTab: React.FC = () => {
             }}
           >
             Update Role
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog 
+        open={isDeleteDialogOpen} 
+        onClose={() => setIsDeleteDialogOpen(false)}
+        PaperProps={{
+          sx: { borderRadius: 3 }
+        }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Avatar sx={{ bgcolor: 'error.main' }}>
+              <Delete />
+            </Avatar>
+            <Typography variant="h6">Confirm User Removal</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Typography gutterBottom>
+            Are you sure you want to remove <strong>{userToDelete?.email}</strong> from authorized users?
+          </Typography>
+          <Alert severity="warning" sx={{ mt: 2 }}>
+            This action cannot be undone. The user will lose access to the application immediately.
+          </Alert>
+        </DialogContent>
+        <DialogActions sx={{ p: 3, pt: 1 }}>
+          <Button 
+            onClick={() => setIsDeleteDialogOpen(false)}
+            sx={{ textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDeleteConfirm}
+            color="error"
+            variant="contained"
+            sx={{ 
+              textTransform: 'none',
+              borderRadius: 2
+            }}
+          >
+            Remove User
           </Button>
         </DialogActions>
       </Dialog>

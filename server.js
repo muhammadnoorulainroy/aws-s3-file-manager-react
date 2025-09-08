@@ -12,6 +12,8 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const databaseService = require('./database');
+
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || process.env.PORT || 5001;
@@ -32,17 +34,10 @@ if (!fs.existsSync(dataDir)) {
 function initializeAuthorizedUsersFile() {
   if (!fs.existsSync(AUTHORIZED_USERS_FILE)) {
     const defaultUsers = {
-      users: [
-        {
-          email: 'admin@turing.com',
-          role: 'admin',
-          addedAt: new Date().toISOString(),
-          addedBy: 'system'
-        }
-      ]
+      users: []
     };
     fs.writeFileSync(AUTHORIZED_USERS_FILE, JSON.stringify(defaultUsers, null, 2));
-    console.log('✅ Initialized authorized users file with default admin');
+    console.log('✅ Initialized authorized users file (empty)');
   }
 }
 
@@ -108,9 +103,8 @@ function saveActivityLogs(activityData) {
 }
 
 // Helper function to log user activity
-function logActivity(userEmail, userName, action, fileName, fileSize, status, details) {
+async function logActivity(userEmail, userName, action, fileName, fileSize, status, details) {
   try {
-    const activityData = loadActivityLogs();
     const newActivity = {
       id: `act_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       userEmail,
@@ -123,50 +117,100 @@ function logActivity(userEmail, userName, action, fileName, fileSize, status, de
       details
     };
     
-    activityData.activities.unshift(newActivity); // Add to beginning
-    
-    // Keep only the last 1000 activities to prevent file from growing too large
-    if (activityData.activities.length > 1000) {
-      activityData.activities = activityData.activities.slice(0, 1000);
+    // Save to database first (primary storage)
+    try {
+      await databaseService.addActivity(newActivity);
+      console.log(`📝 Activity logged to database: ${userEmail} - ${action} - ${fileName} - ${status}`);
+    } catch (dbError) {
+      console.error('❌ Error saving activity to database:', dbError);
+      console.log('🔄 Falling back to JSON file...');
+      
+      // Fallback to JSON file if database fails
+      const activityData = loadActivityLogs();
+      activityData.activities.unshift(newActivity); // Add to beginning
+      
+      // Keep only the last 1000 activities to prevent file from growing too large
+      if (activityData.activities.length > 1000) {
+        activityData.activities = activityData.activities.slice(0, 1000);
+      }
+      
+      saveActivityLogs(activityData);
+      console.log(`📝 Activity logged to JSON file: ${userEmail} - ${action} - ${fileName} - ${status}`);
     }
-    
-    saveActivityLogs(activityData);
-    console.log(`📝 Activity logged: ${userEmail} - ${action} - ${fileName} - ${status}`);
   } catch (error) {
     console.error('❌ Error logging activity:', error);
   }
 }
 
 // Middleware to check if user is authorized
-function checkUserAuthorization(req, res, next) {
-  // For development/testing, allow localhost access
-  if (process.env.NODE_ENV !== 'production') {
-    req.user = { email: 'admin@turing.com', role: 'admin' };
-    return next();
-  }
-
-  // In production, check the user's email from Google OAuth
+async function checkUserAuthorization(req, res, next) {
+  // Get user email from headers (set by frontend authentication)
   const userEmail = req.headers['x-user-email']; // This should be set by Google OAuth
   
-  if (!userEmail) {
+  // For development/testing, use a default if no header is provided
+  const effectiveUserEmail = userEmail || (process.env.NODE_ENV !== 'production' ? 'admin@turing.com' : null);
+  
+  if (!effectiveUserEmail) {
     return res.status(401).json({ 
       error: 'UNAUTHORIZED', 
       message: 'User email not found. Please ensure you are properly authenticated.' 
     });
   }
 
-  const usersData = loadAuthorizedUsers();
-  const authorizedUser = usersData.users.find(user => user.email.toLowerCase() === userEmail.toLowerCase());
-  
-  if (!authorizedUser) {
-    return res.status(403).json({ 
-      error: 'ACCESS_DENIED', 
-      message: 'Your email is not authorized to access this application. Please contact an administrator.' 
-    });
-  }
+  try {
+    // Check database first
+    const authorizedUser = await databaseService.getUserByEmail(effectiveUserEmail);
+    
+    if (authorizedUser) {
+      req.user = {
+        email: authorizedUser.email,
+        role: authorizedUser.role,
+        addedAt: authorizedUser.addedAt,
+        addedBy: authorizedUser.addedBy
+      };
+      return next();
+    }
 
-  req.user = authorizedUser;
-  next();
+    // Fallback to JSON file if database fails
+    console.log('🔄 Falling back to JSON file for user authorization...');
+    const usersData = loadAuthorizedUsers();
+    const jsonUser = usersData.users.find(user => user.email.toLowerCase() === effectiveUserEmail.toLowerCase());
+    
+    if (!jsonUser) {
+      return res.status(403).json({ 
+        error: 'ACCESS_DENIED', 
+        message: 'Your email is not authorized to access this application. Please contact an administrator.' 
+      });
+    }
+
+    req.user = jsonUser;
+    next();
+  } catch (error) {
+    console.error('❌ Error checking user authorization:', error);
+    
+    // Fallback to JSON file
+    try {
+      console.log('🔄 Falling back to JSON file due to database error...');
+      const usersData = loadAuthorizedUsers();
+      const jsonUser = usersData.users.find(user => user.email.toLowerCase() === effectiveUserEmail.toLowerCase());
+      
+      if (!jsonUser) {
+        return res.status(403).json({ 
+          error: 'ACCESS_DENIED', 
+          message: 'Your email is not authorized to access this application. Please contact an administrator.' 
+        });
+      }
+
+      req.user = jsonUser;
+      next();
+    } catch (fallbackError) {
+      console.error('❌ Fallback authorization also failed:', fallbackError);
+      return res.status(500).json({ 
+        error: 'AUTHORIZATION_ERROR', 
+        message: 'Failed to verify user authorization.' 
+      });
+    }
+  }
 }
 
 // Middleware to check if user is admin
@@ -551,7 +595,7 @@ app.post('/api/s3/upload', checkUserAuthorization, ensureS3Client, upload.single
     await s3Client.send(command);
     
     // Log successful upload activity
-    logActivity(
+    await logActivity(
       req.user.email,
       req.user.name || req.user.email,
       'upload',
@@ -569,7 +613,7 @@ app.post('/api/s3/upload', checkUserAuthorization, ensureS3Client, upload.single
     const fileName = req.body?.key?.split('/').pop() || req.file?.originalname || 'unknown-file';
     const fileSize = req.file ? `${(req.file.size / (1024 * 1024)).toFixed(2)} MB` : 'unknown';
     
-    logActivity(
+    await logActivity(
       req.user?.email || 'unknown',
       req.user?.name || req.user?.email || 'unknown',
       'upload',
@@ -619,7 +663,7 @@ app.delete('/api/s3/delete', checkUserAuthorization, ensureS3Client, async (req,
     await s3Client.send(command);
     
     // Log successful delete activity
-    logActivity(
+    await logActivity(
       req.user.email,
       req.user.name || req.user.email,
       'delete',
@@ -636,7 +680,7 @@ app.delete('/api/s3/delete', checkUserAuthorization, ensureS3Client, async (req,
     // Log failed delete activity
     const fileName = req.body?.key?.split('/').pop() || 'unknown-file';
     
-    logActivity(
+    await logActivity(
       req.user?.email || 'unknown',
       req.user?.name || req.user?.email || 'unknown',
       'delete',
@@ -695,7 +739,7 @@ app.post('/api/s3/presigned', checkUserAuthorization, ensureS3Client, async (req
     console.log(`Generated presigned URL for download: ${fileName}`);
     
     // Log successful download activity
-    logActivity(
+    await logActivity(
       req.user.email,
       req.user.name || req.user.email,
       'download',
@@ -712,7 +756,7 @@ app.post('/api/s3/presigned', checkUserAuthorization, ensureS3Client, async (req
     // Log failed download activity
     const fileName = req.body?.key?.split('/').pop() || 'unknown-file';
     
-    logActivity(
+    await logActivity(
       req.user?.email || 'unknown',
       req.user?.name || req.user?.email || 'unknown',
       'download',
@@ -740,7 +784,7 @@ app.post('/api/s3/activities/log-download', checkUserAuthorization, async (req, 
     }
     
     // Log the download activity
-    logActivity(
+    await logActivity(
       req.user.email,
       req.user.name || req.user.email,
       'download',
@@ -886,29 +930,76 @@ app.get('/health', (req, res) => {
 // USER MANAGEMENT API ENDPOINTS
 // ============================================
 
-// Get authorized users list
-app.get('/api/users/authorized', checkUserAuthorization, (req, res) => {
+// Get authorized users list with pagination
+app.get('/api/users/authorized', checkUserAuthorization, async (req, res) => {
   try {
-    const usersData = loadAuthorizedUsers();
-    
+    // Extract query parameters
+    const {
+      page = 1,
+      limit = 50,
+      search = '',
+      role = '',
+      sortBy = 'added_at',
+      sortOrder = 'DESC'
+    } = req.query;
+
+    // Validate parameters
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 50)); // Max 100 items per page
+
+    // Get users from database
+    const result = await databaseService.getUsers({
+      page: pageNum,
+      limit: limitNum,
+      search: search.toString(),
+      role: role.toString(),
+      sortBy: ['added_at', 'email', 'role'].includes(sortBy) ? sortBy : 'added_at',
+      sortOrder: ['ASC', 'DESC'].includes(sortOrder.toString().toUpperCase()) ? sortOrder.toString().toUpperCase() : 'DESC'
+    });
+
     res.json({
-      users: usersData.users.sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt)),
+      users: result.users,
+      pagination: result.pagination,
       currentUser: {
         email: req.user.email,
         role: req.user.role
       }
     });
   } catch (error) {
-    console.error('❌ Error fetching authorized users:', error);
-    res.status(500).json({ 
-      error: 'FETCH_USERS_FAILED', 
-      message: 'Failed to fetch authorized users list.' 
-    });
+    console.error('❌ Error fetching users from database:', error);
+    
+    // Fallback to JSON file if database fails
+    try {
+      console.log('🔄 Falling back to JSON file...');
+      const usersData = loadAuthorizedUsers();
+      
+      res.json({
+        users: usersData.users.sort((a, b) => new Date(b.addedAt) - new Date(a.addedAt)),
+        pagination: {
+          currentPage: 1,
+          totalPages: 1,
+          totalCount: usersData.users.length,
+          limit: usersData.users.length,
+          hasNextPage: false,
+          hasPrevPage: false
+        },
+        currentUser: {
+          email: req.user.email,
+          role: req.user.role
+        }
+      });
+    } catch (fallbackError) {
+      console.error('❌ Fallback to JSON also failed:', fallbackError);
+      res.status(500).json({ 
+        error: 'FETCH_USERS_FAILED', 
+        message: 'Failed to fetch authorized users from both database and JSON file.' 
+      });
+    }
   }
 });
 
 // Add new authorized user
-app.post('/api/users/authorized', checkUserAuthorization, requireAdmin, (req, res) => {
+app.post('/api/users/authorized', checkUserAuthorization, requireAdmin, async (req, res) => {
   try {
     const { email, role } = req.body;
     
@@ -927,41 +1018,67 @@ app.post('/api/users/authorized', checkUserAuthorization, requireAdmin, (req, re
     }
     
     const normalizedEmail = email.trim().toLowerCase();
-    const usersData = loadAuthorizedUsers();
     
-    // Check if user already exists
-    const existingUser = usersData.users.find(user => user.email.toLowerCase() === normalizedEmail);
-    if (existingUser) {
-      return res.status(409).json({ 
-        error: 'USER_EXISTS', 
-        message: 'User with this email already exists.' 
+    try {
+      // Add user to database
+      const newUser = await databaseService.addUser({
+        email: normalizedEmail,
+        role,
+        addedBy: req.user.email
+      });
+      
+      console.log(`✅ User added to database: ${normalizedEmail} (${role}) by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User added successfully.',
+        user: newUser
+      });
+    } catch (dbError) {
+      if (dbError.message === 'USER_EXISTS') {
+        return res.status(409).json({ 
+          error: 'USER_EXISTS', 
+          message: 'User with this email already exists.' 
+        });
+      }
+      
+      console.error('❌ Database error, falling back to JSON:', dbError);
+      
+      // Fallback to JSON file
+      const usersData = loadAuthorizedUsers();
+      
+      // Check if user already exists in JSON
+      const existingUser = usersData.users.find(user => user.email.toLowerCase() === normalizedEmail);
+      if (existingUser) {
+        return res.status(409).json({ 
+          error: 'USER_EXISTS', 
+          message: 'User with this email already exists.' 
+        });
+      }
+      
+      // Add new user to JSON
+      const newUser = {
+        email: normalizedEmail,
+        role,
+        addedAt: new Date().toISOString(),
+        addedBy: req.user.email
+      };
+      
+      usersData.users.push(newUser);
+      
+      if (!saveAuthorizedUsers(usersData)) {
+        return res.status(500).json({ 
+          error: 'SAVE_FAILED', 
+          message: 'Failed to save user to authorized users list.' 
+        });
+      }
+      
+      console.log(`✅ User added to JSON: ${normalizedEmail} (${role}) by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User added successfully.',
+        user: newUser
       });
     }
-    
-    // Add new user
-    const newUser = {
-      email: normalizedEmail,
-      role,
-      addedAt: new Date().toISOString(),
-      addedBy: req.user.email
-    };
-    
-    usersData.users.push(newUser);
-    
-    if (!saveAuthorizedUsers(usersData)) {
-      return res.status(500).json({ 
-        error: 'SAVE_FAILED', 
-        message: 'Failed to save user to authorized users list.' 
-      });
-    }
-    
-    console.log(`✅ User added: ${normalizedEmail} (${role}) by ${req.user.email}`);
-    res.json({ 
-      success: true, 
-      message: 'User added successfully.',
-      user: newUser
-    });
-    
   } catch (error) {
     console.error('❌ Error adding user:', error);
     res.status(500).json({ 
@@ -972,7 +1089,7 @@ app.post('/api/users/authorized', checkUserAuthorization, requireAdmin, (req, re
 });
 
 // Update user role
-app.put('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, (req, res) => {
+app.put('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, async (req, res) => {
   try {
     const targetEmail = decodeURIComponent(req.params.email).toLowerCase();
     const { role } = req.body;
@@ -984,16 +1101,6 @@ app.put('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, (r
       });
     }
     
-    const usersData = loadAuthorizedUsers();
-    const userIndex = usersData.users.findIndex(user => user.email.toLowerCase() === targetEmail);
-    
-    if (userIndex === -1) {
-      return res.status(404).json({ 
-        error: 'USER_NOT_FOUND', 
-        message: 'User not found in authorized users list.' 
-      });
-    }
-    
     // Prevent admins from removing their own admin privileges
     if (targetEmail === req.user.email.toLowerCase() && role !== 'admin') {
       return res.status(400).json({ 
@@ -1002,22 +1109,53 @@ app.put('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, (r
       });
     }
     
-    usersData.users[userIndex].role = role;
-    
-    if (!saveAuthorizedUsers(usersData)) {
-      return res.status(500).json({ 
-        error: 'SAVE_FAILED', 
-        message: 'Failed to update user role.' 
+    try {
+      // Update user in database
+      const updatedUser = await databaseService.updateUser(targetEmail, role);
+      
+      console.log(`✅ User role updated in database: ${targetEmail} -> ${role} by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User role updated successfully.',
+        user: updatedUser
+      });
+    } catch (dbError) {
+      if (dbError.message === 'USER_NOT_FOUND') {
+        return res.status(404).json({ 
+          error: 'USER_NOT_FOUND', 
+          message: 'User not found in authorized users list.' 
+        });
+      }
+      
+      console.error('❌ Database error, falling back to JSON:', dbError);
+      
+      // Fallback to JSON file
+      const usersData = loadAuthorizedUsers();
+      const userIndex = usersData.users.findIndex(user => user.email.toLowerCase() === targetEmail);
+      
+      if (userIndex === -1) {
+        return res.status(404).json({ 
+          error: 'USER_NOT_FOUND', 
+          message: 'User not found in authorized users list.' 
+        });
+      }
+      
+      usersData.users[userIndex].role = role;
+      
+      if (!saveAuthorizedUsers(usersData)) {
+        return res.status(500).json({ 
+          error: 'SAVE_FAILED', 
+          message: 'Failed to update user role.' 
+        });
+      }
+      
+      console.log(`✅ User role updated in JSON: ${targetEmail} -> ${role} by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User role updated successfully.',
+        user: usersData.users[userIndex]
       });
     }
-    
-    console.log(`✅ User role updated: ${targetEmail} -> ${role} by ${req.user.email}`);
-    res.json({ 
-      success: true, 
-      message: 'User role updated successfully.',
-      user: usersData.users[userIndex]
-    });
-    
   } catch (error) {
     console.error('❌ Error updating user:', error);
     res.status(500).json({ 
@@ -1028,7 +1166,7 @@ app.put('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, (r
 });
 
 // Delete authorized user
-app.delete('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, (req, res) => {
+app.delete('/api/users/authorized/:email', checkUserAuthorization, requireAdmin, async (req, res) => {
   try {
     const targetEmail = decodeURIComponent(req.params.email).toLowerCase();
     
@@ -1040,32 +1178,53 @@ app.delete('/api/users/authorized/:email', checkUserAuthorization, requireAdmin,
       });
     }
     
-    const usersData = loadAuthorizedUsers();
-    const userIndex = usersData.users.findIndex(user => user.email.toLowerCase() === targetEmail);
-    
-    if (userIndex === -1) {
-      return res.status(404).json({ 
-        error: 'USER_NOT_FOUND', 
-        message: 'User not found in authorized users list.' 
+    try {
+      // Delete user from database
+      const deletedUser = await databaseService.deleteUser(targetEmail);
+      
+      console.log(`✅ User deleted from database: ${targetEmail} by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User deleted successfully.',
+        deletedUser: deletedUser
+      });
+    } catch (dbError) {
+      if (dbError.message === 'USER_NOT_FOUND') {
+        return res.status(404).json({ 
+          error: 'USER_NOT_FOUND', 
+          message: 'User not found in authorized users list.' 
+        });
+      }
+      
+      console.error('❌ Database error, falling back to JSON:', dbError);
+      
+      // Fallback to JSON file
+      const usersData = loadAuthorizedUsers();
+      const userIndex = usersData.users.findIndex(user => user.email.toLowerCase() === targetEmail);
+      
+      if (userIndex === -1) {
+        return res.status(404).json({ 
+          error: 'USER_NOT_FOUND', 
+          message: 'User not found in authorized users list.' 
+        });
+      }
+      
+      const deletedUser = usersData.users.splice(userIndex, 1)[0];
+      
+      if (!saveAuthorizedUsers(usersData)) {
+        return res.status(500).json({ 
+          error: 'SAVE_FAILED', 
+          message: 'Failed to delete user from authorized users list.' 
+        });
+      }
+      
+      console.log(`✅ User deleted from JSON: ${targetEmail} by ${req.user.email}`);
+      res.json({ 
+        success: true, 
+        message: 'User deleted successfully.',
+        deletedUser: deletedUser
       });
     }
-    
-    const deletedUser = usersData.users.splice(userIndex, 1)[0];
-    
-    if (!saveAuthorizedUsers(usersData)) {
-      return res.status(500).json({ 
-        error: 'SAVE_FAILED', 
-        message: 'Failed to delete user from authorized users list.' 
-      });
-    }
-    
-    console.log(`✅ User deleted: ${targetEmail} by ${req.user.email}`);
-    res.json({ 
-      success: true, 
-      message: 'User deleted successfully.',
-      deletedUser: deletedUser
-    });
-    
   } catch (error) {
     console.error('❌ Error deleting user:', error);
     res.status(500).json({ 
@@ -1079,31 +1238,73 @@ app.delete('/api/users/authorized/:email', checkUserAuthorization, requireAdmin,
 // ACTIVITY LOGS API ENDPOINTS
 // ============================================
 
-// Get activity logs (admin only)
-app.get('/api/activities', checkUserAuthorization, requireAdmin, (req, res) => {
+// Get activity logs with pagination (admin only)
+app.get('/api/activities', checkUserAuthorization, requireAdmin, async (req, res) => {
   try {
-    const activityData = loadActivityLogs();
-    const activities = activityData.activities || [];
-    
-    // Calculate statistics
-    const stats = {
-      totalUploads: activities.filter(a => a.action === 'upload').length,
-      totalDownloads: activities.filter(a => a.action === 'download').length,
-      totalDeletes: activities.filter(a => a.action === 'delete').length,
-      totalUsers: new Set(activities.map(a => a.userEmail)).size,
-    };
-    
-    res.json({
-      activities: activities.slice(0, 100), // Return last 100 activities
-      totalCount: activities.length,
-      stats
+    // Extract query parameters
+    const {
+      page = 1,
+      limit = 20,
+      search = '',
+      action = '',
+      status = '',
+      sortBy = 'timestamp',
+      sortOrder = 'DESC'
+    } = req.query;
+
+    // Validate parameters
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20)); // Max 100 items per page
+
+    // Get activities from database
+    const result = await databaseService.getActivities({
+      page: pageNum,
+      limit: limitNum,
+      search: search.toString(),
+      action: action.toString(),
+      status: status.toString(),
+      sortBy: ['timestamp', 'action', 'status', 'user_email'].includes(sortBy) ? sortBy : 'timestamp',
+      sortOrder: ['ASC', 'DESC'].includes(sortOrder.toString().toUpperCase()) ? sortOrder.toString().toUpperCase() : 'DESC'
     });
+
+    res.json(result);
   } catch (error) {
-    console.error('❌ Error fetching activities:', error);
-    res.status(500).json({ 
-      error: 'FETCH_ACTIVITIES_FAILED', 
-      message: 'Failed to fetch activity logs.' 
-    });
+    console.error('❌ Error fetching activities from database:', error);
+    
+    // Fallback to JSON file if database fails
+    try {
+      console.log('🔄 Falling back to JSON file...');
+      const activityData = loadActivityLogs();
+      const activities = activityData.activities || [];
+      
+      // Calculate statistics
+      const stats = {
+        totalUploads: activities.filter(a => a.action === 'upload').length,
+        totalDownloads: activities.filter(a => a.action === 'download').length,
+        totalDeletes: activities.filter(a => a.action === 'delete').length,
+        totalUsers: new Set(activities.map(a => a.userEmail)).size,
+      };
+      
+      res.json({
+        activities: activities.slice(0, 100), // Return last 100 activities
+        totalCount: activities.length,
+        pagination: {
+          currentPage: 1,
+          totalPages: Math.ceil(activities.length / 100),
+          totalCount: activities.length,
+          limit: 100,
+          hasNextPage: false,
+          hasPrevPage: false
+        },
+        stats
+      });
+    } catch (fallbackError) {
+      console.error('❌ Fallback to JSON also failed:', fallbackError);
+      res.status(500).json({ 
+        error: 'FETCH_ACTIVITIES_FAILED', 
+        message: 'Failed to fetch activity logs from both database and JSON file.' 
+      });
+    }
   }
 });
 
