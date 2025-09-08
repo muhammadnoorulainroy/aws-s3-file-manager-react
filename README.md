@@ -7,11 +7,15 @@ A modern, enterprise-grade React application for managing AWS S3 files with Goog
 - 🔐 **Google OAuth Authentication**: Secure sign-in with enterprise Google accounts
 - 📁 **Complete File Management**: Upload, download, browse, and delete files in S3
 - ✅ **JSON Schema Validation**: Validate JSON data against schemas with detailed error reporting
+- 📊 **Batch Download System**: Download multiple batches from Turing labeling system with comma-separated IDs
+- 👥 **User Management**: Admin panel for managing authorized users and roles
+- 📈 **Activity Tracking**: Comprehensive logging with database storage and admin dashboard
 - 🎨 **Modern UI**: Beautiful Material-UI interface with responsive design
 - 🔄 **Real-time Status**: Live AWS connection monitoring and progress tracking
 - 🐍 **Python Backend**: Robust schema validation using jsonschema library
 - 📊 **Smart Organization**: Project-based folder structure with date organization
 - 🔒 **Enterprise Security**: Server-managed AWS credentials and IAM role support
+- 🗄️ **Database Integration**: PostgreSQL for user management and activity logging
 - 📱 **Mobile Friendly**: Responsive design that works on all devices
 - 🚀 **Production Ready**: Full CI/CD pipeline with nginx, SSL, and PM2
 
@@ -23,6 +27,7 @@ A modern, enterprise-grade React application for managing AWS S3 files with Goog
 
 - **Node.js** 18+ and npm
 - **Python** 3.8+ with pip
+- **PostgreSQL** 12+ (for user management and activity logging)
 - **AWS Account** with S3 access and IAM role
 - **Google OAuth 2.0** client configuration
 
@@ -52,7 +57,22 @@ source venv/bin/activate
 pip install jsonschema
 ```
 
-### 3. Local Development Setup
+### 3. Database Setup
+
+```bash
+# Install PostgreSQL (Ubuntu/Debian)
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+
+# Create database and user
+sudo -u postgres psql
+CREATE DATABASE s3_file_manager;
+CREATE USER s3_user WITH ENCRYPTED PASSWORD 'your_password';
+GRANT ALL PRIVILEGES ON DATABASE s3_file_manager TO s3_user;
+\q
+```
+
+### 4. Local Development Setup
 
 For local development, create a `.env` file:
 ```bash
@@ -68,9 +88,16 @@ AWS_S3_BUCKET_NAME=your-bucket-name
 AWS_ACCESS_KEY_ID=your-access-key
 AWS_SECRET_ACCESS_KEY=your-secret-key
 AWS_ROLE_ARN=arn:aws:iam::123456789012:role/your-role-name
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=s3_file_manager
+DB_USER=s3_user
+DB_PASSWORD=your_password
 ```
 
-### 4. Start the Application
+### 5. Start the Application
 
 **Terminal 1 - Backend Server:**
 ```bash
@@ -129,7 +156,7 @@ Internet → nginx (Port 443) → Static React Files + Node.js Backend → AWS S
 3. **Manage Files**: Upload, download, browse, and delete files
 4. **Validate Schemas**: Use JSON schema validation for data integrity
 
-### 📁 File Management Features
+### 📁 Application Tabs & Features
 
 #### 1. **Upload Files**
 - Navigate to the **Upload** tab
@@ -143,6 +170,7 @@ Internet → nginx (Port 443) → Static React Files + Node.js Backend → AWS S
 - Select project and date folder
 - Browse available files
 - Click **download button** for instant file download
+- **Batch Download**: Enter comma-separated batch IDs (e.g., `659,660,661`) to download multiple batches from Turing labeling system
 
 #### 3. **Browse S3 Bucket**
 - Use the **Browse** tab for complete bucket exploration
@@ -155,14 +183,25 @@ Internet → nginx (Port 443) → Static React Files + Node.js Backend → AWS S
 - View files available for deletion
 - **Confirm deletion** with safety warnings
 
-### ✅ JSON Schema Validation
-
+#### 5. **JSON Schema Validation**
 The **Schema Validation** tab provides powerful JSON validation:
+- **Upload Schema File (.json)**
+- **Upload Data File (.json)**
+- **Run Validation** and view detailed results
+- **Review Errors** with specific item-by-item feedback
 
-1. **Upload Schema File (.json)**
-2. **Upload Data File (.json)**
-3. **Run Validation** and view detailed results
-4. **Review Errors** with specific item-by-item feedback
+#### 6. **User Management** *(Admin Only)*
+- **Manage Authorized Users**: Add, edit, and remove users
+- **Role Assignment**: Set user roles (Admin/User)
+- **Access Control**: Control who can access the application
+- **User Activity**: View user-specific activity logs
+
+#### 7. **Activity Tracking** *(Admin Only)*
+- **Comprehensive Logging**: All user actions are tracked
+- **Database Storage**: Activities stored in PostgreSQL for reliability
+- **Admin Dashboard**: View system-wide activity statistics
+- **Export Capabilities**: Download activity reports
+- **Real-time Monitoring**: Live activity feed
 
 ## 🏗️ S3 Bucket Structure
 
@@ -200,6 +239,7 @@ your-s3-bucket/
 
 ### Backend
 - **Node.js** with Express
+- **PostgreSQL** for user management and activity logging
 - **Python 3.8+** for schema validation
 - **PM2** for process management
 - **Multer** for file handling
@@ -231,8 +271,10 @@ aws-s3-file-manager-react/
 │       └── index.ts                 # TypeScript definitions
 ├── docs/                            # Documentation
 ├── venv/                            # Python virtual environment
+├── data/                            # JSON file storage (fallback)
 ├── schema_validator.py              # Python validation script
 ├── server.js                       # Backend API server
+├── database.js                     # Database service layer
 ├── ecosystem.config.js              # PM2 configuration
 ├── setup-server.sh                 # Ubuntu server setup script
 ├── nginx-s3manager.conf            # nginx configuration
@@ -293,6 +335,13 @@ AWS_SECRET_ACCESS_KEY=[Your AWS Secret Key]
 AWS_ROLE_ARN=arn:aws:iam::123456789012:role/your-role
 AWS_S3_BUCKET_NAME=your-bucket-name
 AWS_SESSION_NAME=S3FileManagerSession
+
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=s3_file_manager
+DB_USER=s3_user
+DB_PASSWORD=[Your Database Password]
 
 # Server Configuration
 NODE_ENV=production
@@ -421,6 +470,18 @@ tail -f /var/log/nginx/s3manager.turing.com.access.log
 - `GET /api/s3/files` - List files
 - `DELETE /api/s3/delete` - Delete files
 
+### Batch Downloads
+- `POST /api/batch/download` - Download batch data from Turing labeling system
+
+### User Management *(Admin Only)*
+- `GET /api/users/authorized` - Get authorized users list
+- `POST /api/users/authorized` - Add new authorized user
+- `PUT /api/users/authorized/:email` - Update user role
+- `DELETE /api/users/authorized/:email` - Remove authorized user
+
+### Activity Tracking *(Admin Only)*
+- `GET /api/activities` - Get activity logs with statistics
+
 ### Schema Validation
 - `POST /api/schema/validate` - Validate JSON schema
 
@@ -446,6 +507,14 @@ For issues and questions:
 - 💬 **Start a discussion** for general questions
 
 ## 🎉 Latest Updates
+
+### v3.0 - Database Integration & Advanced Features
+- ✅ **PostgreSQL Database Integration** - Reliable data storage for users and activities
+- ✅ **User Management System** - Admin panel for managing authorized users and roles
+- ✅ **Activity Tracking Dashboard** - Comprehensive logging with admin analytics
+- ✅ **Batch Download System** - Download multiple batches from Turing labeling system
+- ✅ **Enhanced Security Model** - Database-backed user authorization
+- ✅ **Dual Storage System** - Database primary with JSON file fallback
 
 ### v2.0 - Google OAuth & Server-Managed Configuration
 - ✅ **Google OAuth Authentication** - Secure enterprise sign-in
