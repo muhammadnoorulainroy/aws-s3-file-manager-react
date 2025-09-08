@@ -1238,8 +1238,8 @@ app.delete('/api/users/authorized/:email', checkUserAuthorization, requireAdmin,
 // ACTIVITY LOGS API ENDPOINTS
 // ============================================
 
-// Get activity logs with pagination (admin only)
-app.get('/api/activities', checkUserAuthorization, requireAdmin, async (req, res) => {
+// Get activity logs with pagination (accessible to all users)
+app.get('/api/activities', checkUserAuthorization, async (req, res) => {
   try {
     // Extract query parameters
     const {
