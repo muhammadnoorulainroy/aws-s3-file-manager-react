@@ -293,8 +293,8 @@ class DatabaseService {
       }
 
       const query = `
-        INSERT INTO authorized_users (email, role, added_by)
-        VALUES ($1, $2, $3)
+        INSERT INTO authorized_users (email, role, added_at, added_by)
+        VALUES ($1, $2, NOW(), $3)
         RETURNING id, email, role, added_at, added_by, updated_at
       `;
 
